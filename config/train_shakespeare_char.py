@@ -1,7 +1,7 @@
 # train a miniature character-level shakespeare model
 # good for debugging and playing on macbooks and such
 
-out_dir = 'out-shakespeare-char'
+out_dir = 'out-shakespeare-char-gated'
 eval_interval = 250 # keep frequent because we'll overfit
 eval_iters = 200
 log_interval = 10 # don't print too too often
@@ -23,6 +23,7 @@ n_layer = 6
 n_head = 6
 n_embd = 384
 dropout = 0.2
+gated_attn = True
 
 learning_rate = 1e-3 # with baby networks can afford to go a bit higher
 max_iters = 5000

@@ -43,11 +43,14 @@ class CausalSelfAttention(nn.Module):
         self.dropout = config.dropout
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        self.gated_attn = config.gated_attn  # use gated attention instead of regular attention
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
+        else:
+            assert not self.gated_attn, "Flash attention is not supported with gated attention"
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -60,13 +63,22 @@ class CausalSelfAttention(nn.Module):
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
+            if self.gated_attn:
+                raise RuntimeError(f"Gated attention is not supported when using Flash attention")
             # efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att_gate = None
+            if self.gated_attn:
+                # Gated attention computes the attention mask output based on the max product
+                max_att_score = torch.max(dim=-1, keepdim=True)  # qk^{T} -- max over keys
+                att_gate = torch.sigmoid(max_att_score)  # BHLL
             att = F.softmax(att, dim=-1)
+            if att_gate is not None:
+                att = att * att_gate  # mask all of the softmax scores for gated attention outputs
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
@@ -114,6 +126,7 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    gated_attn: bool = False  # use gated attention instead of regular attention
 
 class GPT(nn.Module):
 

@@ -42,10 +42,11 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.dropout = config.dropout
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        self.flash = False # hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         self.gated_attn = config.gated_attn  # use gated attention instead of regular attention
         if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+            if not self.gated_attn:
+                print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
@@ -64,7 +65,7 @@ class CausalSelfAttention(nn.Module):
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             if self.gated_attn:
-                raise RuntimeError(f"Gated attention is not supported when using Flash attention")
+                raise RuntimeError("Gated attention is not supported when using Flash attention")
             # efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
         else:
@@ -74,7 +75,7 @@ class CausalSelfAttention(nn.Module):
             att_gate = None
             if self.gated_attn:
                 # Gated attention computes the attention mask output based on the max product
-                max_att_score = torch.max(dim=-1, keepdim=True)  # qk^{T} -- max over keys
+                max_att_score = torch.max(att, dim=-1, keepdim=True).values  # qk^{T} -- max over keys
                 att_gate = torch.sigmoid(max_att_score)  # BHLL
             att = F.softmax(att, dim=-1)
             if att_gate is not None:
